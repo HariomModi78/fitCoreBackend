@@ -6,19 +6,16 @@ const paymentSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Gym',
       required: true,
-      index: true,
     },
     memberId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Member',
       required: true,
-      index: true,
     },
     subscriptionId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Subscription',
       required: true,
-      index: true,
     },
     receiptNumber: {
       type: String,
@@ -29,6 +26,12 @@ const paymentSchema = new mongoose.Schema(
       type: Number,
       required: [true, 'Payment amount is required'],
       min: [1, 'Amount must be greater than zero'],
+    },
+    amountPaidSnapshot: {
+      type: Number,
+    },
+    remainingBalanceSnapshot: {
+      type: Number,
     },
     paymentMethod: {
       type: String,
@@ -42,7 +45,6 @@ const paymentSchema = new mongoose.Schema(
     paymentDate: {
       type: Date,
       default: Date.now,
-      index: true,
     },
     recordedBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -62,8 +64,17 @@ const paymentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// 1. Enforces unique receipt numbers per gym (e.g. REC-00001). Without it: Concurrent payments could produce duplicate receipt numbers.
 paymentSchema.index({ gymId: 1, receiptNumber: 1 }, { unique: true });
-paymentSchema.index({ gymId: 1, paymentDate: 1 });
+
+// 2. Payments Ledger: lists all gym transactions in reverse chronological order. Without it: High-latency in-memory sort on every payment report view.
+paymentSchema.index({ gymId: 1, paymentDate: -1, createdAt: -1 });
+
+// 3. Member Payment History: shows all transactions made by a specific member. Without it: Scans entire gym payment collection to find one member's receipts.
+paymentSchema.index({ gymId: 1, memberId: 1, paymentDate: -1 });
+
+// 4. Historical Receipt Snapshot Generator: fetches chronological payments for a subscription to compute exact balance at receipt time. Without it: Slow non-indexed lookup per receipt download.
+paymentSchema.index({ subscriptionId: 1, createdAt: 1 });
 
 export const Payment = mongoose.model('Payment', paymentSchema);
 export default Payment;

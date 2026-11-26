@@ -11,6 +11,8 @@ import staffRoutes from './staff.routes.js';
 import notificationRoutes from './notification.routes.js';
 import gymRoutes from './gym.routes.js';
 import saasRoutes from './saas.routes.js';
+import superadminRoutes from './superadmin.routes.js';
+import webhookRoutes from './webhook.routes.js';
 
 const router = Router();
 
@@ -26,5 +28,7 @@ router.use('/staff', staffRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/gyms', gymRoutes);
 router.use('/saas', saasRoutes);
+router.use('/superadmin', superadminRoutes);
+router.use('/webhook', webhookRoutes);
 
 export default router;

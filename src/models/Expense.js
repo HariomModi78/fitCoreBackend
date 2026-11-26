@@ -26,7 +26,6 @@ const expenseSchema = new mongoose.Schema(
         'other',
       ],
       default: 'other',
-      index: true,
     },
     amount: {
       type: Number,
@@ -36,7 +35,6 @@ const expenseSchema = new mongoose.Schema(
     date: {
       type: Date,
       default: Date.now,
-      index: true,
     },
     description: String,
     recordedBy: {
@@ -49,7 +47,11 @@ const expenseSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-expenseSchema.index({ gymId: 1, date: 1 });
+// 1. Lists all gym expenses sorted by newest date first. Without it: Full collection scan + memory sort on Expenses page.
+expenseSchema.index({ gymId: 1, date: -1 });
+
+// 2. Filters expenses by category (Rent, Electricity, Maintenance) sorted by date. Without it: Scans all expenses then filters in memory.
+expenseSchema.index({ gymId: 1, category: 1, date: -1 });
 
 export const Expense = mongoose.model('Expense', expenseSchema);
 export default Expense;

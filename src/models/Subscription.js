@@ -6,13 +6,11 @@ const subscriptionSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Gym',
       required: true,
-      index: true,
     },
     memberId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Member',
       required: true,
-      index: true,
     },
     planId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -56,7 +54,6 @@ const subscriptionSchema = new mongoose.Schema(
     dueAmount: {
       type: Number,
       default: 0,
-      index: true,
     },
     startDate: {
       type: Date,
@@ -65,19 +62,16 @@ const subscriptionSchema = new mongoose.Schema(
     endDate: {
       type: Date,
       required: true,
-      index: true,
     },
     status: {
       type: String,
       enum: ['upcoming', 'active', 'expired', 'cancelled'],
       default: 'active',
-      index: true,
     },
     paymentStatus: {
       type: String,
       enum: ['unpaid', 'partially_paid', 'paid', 'overpaid', 'refunded'],
       default: 'unpaid',
-      index: true,
     },
     dueReminderDays: {
       type: Number,
@@ -86,7 +80,6 @@ const subscriptionSchema = new mongoose.Schema(
     dueReminderDate: {
       type: Date,
       default: null,
-      index: true,
     },
     dueReminderNotes: {
       type: String,
@@ -101,9 +94,20 @@ const subscriptionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-subscriptionSchema.index({ gymId: 1, status: 1 });
-subscriptionSchema.index({ gymId: 1, endDate: 1 });
+// 1. Fetches a member's subscription history & current active plan (newest first). Without it: Scans entire subscriptions collection per member.
+subscriptionSchema.index({ gymId: 1, memberId: 1, createdAt: -1 });
+
+// 2. Automated Expiry Scanner: detects plans expiring today or in N days. Without it: Daily midnight cron job has to scan every single subscription in the gym.
+subscriptionSchema.index({ gymId: 1, status: 1, endDate: 1 });
+
+// 3. Automated Due Reminder Scanner: detects pending dues on or after promised date. Without it: Nightly scheduler does slow unindexed scan across all active subs.
+subscriptionSchema.index({ gymId: 1, status: 1, dueReminderDate: 1 });
+
+// 4. Outstanding dues ledger sorting (highest unpaid dues first). Without it: Slow in-memory sort on financial reports.
 subscriptionSchema.index({ gymId: 1, dueAmount: -1 });
+
+// 5. Filters by payment status (unpaid, partially_paid, paid, overpaid). Without it: Full collection scan when viewing paid vs unpaid accounts.
+subscriptionSchema.index({ gymId: 1, paymentStatus: 1 });
 
 // Automatic calculation hook: guarantees dueAmount & paymentStatus consistency
 subscriptionSchema.pre('save', function (next) {

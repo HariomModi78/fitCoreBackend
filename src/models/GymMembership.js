@@ -6,7 +6,6 @@ const gymMembershipSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
-      index: true,
     },
     gymId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -29,6 +28,7 @@ const gymMembershipSchema = new mongoose.Schema(
         'view_payments',
         'view_reports',
         'manage_expenses',
+        'send_notifications',
       ],
       default: ['view_members', 'manage_memberships', 'record_payments'],
     },
@@ -45,7 +45,7 @@ const gymMembershipSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Ensure a user can only have one membership per gym
+// 1. Multi-tenant uniqueness: ensures a user has exactly one staff/owner role per gym. Without it: Staff could be duplicated or assigned conflicting roles in the same gym.
 gymMembershipSchema.index({ userId: 1, gymId: 1 }, { unique: true });
 
 export const GymMembership = mongoose.model('GymMembership', gymMembershipSchema);

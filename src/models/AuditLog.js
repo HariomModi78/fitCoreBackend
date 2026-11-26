@@ -29,9 +29,11 @@ const auditLogSchema = new mongoose.Schema(
         'EXPENSE_DELETE',
         'STAFF_INVITE',
         'STAFF_PERMISSION_CHANGE',
+        'STAFF_DELETE',
         'GYM_UPDATE',
+        'BROADCAST_ALERT_SENT',
+        'SAAS_SUBSCRIPTION_PURCHASE',
       ],
-      index: true,
     },
     details: {
       type: mongoose.Schema.Types.Mixed,
@@ -43,7 +45,11 @@ const auditLogSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// 1. Audit Trail Feed: loads chronological system activity log (newest first). Without it: High-memory sort across all audit log events.
 auditLogSchema.index({ gymId: 1, createdAt: -1 });
+
+// 2. Action filter (e.g. filter by 'STAFF_INVITE', 'PAYMENT_RECORD', etc.). Without it: Scans all audit events sequentially to find action matches.
+auditLogSchema.index({ gymId: 1, action: 1 });
 
 export const AuditLog = mongoose.model('AuditLog', auditLogSchema);
 export default AuditLog;

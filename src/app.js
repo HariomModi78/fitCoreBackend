@@ -16,6 +16,9 @@ const clientDistPath = path.resolve(__dirname, '../../client/dist');
 
 const app = express();
 
+// Trust reverse proxy (Render, Railway, Nginx, Cloudflare) for secure cookies & client IP
+app.enable('trust proxy');
+
 // Security Middlewares
 app.use(
   helmet({
@@ -43,9 +46,11 @@ app.use(
   })
 );
 
-// Logging
+// Logging: compact dev format in development, standard request log in production for Render monitoring
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
+} else {
+  app.use(morgan(':method :url :status :res[content-length] - :response-time ms'));
 }
 
 // Request Parsers
@@ -53,8 +58,8 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
-// Base Health Check Route
-app.get('/api/v1/health', (req, res) => {
+// Base Health Check Routes
+app.get(['/', '/health', '/api/v1/health'], (req, res) => {
   return ApiResponse.success(
     res,
     {
@@ -70,17 +75,22 @@ app.get('/api/v1/health', (req, res) => {
 // Mount All API v1 Routes
 app.use('/api/v1', apiRouter);
 
-// Serve built frontend static assets in production
+// Serve built frontend static assets in production (if frontend was bundled with backend)
 app.use(express.static(clientDistPath));
 
 // For any non-API route, serve client index.html (SPA fallback)
 app.get('*', (req, res, next) => {
   if (req.originalUrl.startsWith('/api')) {
-    return next(ApiError.notFound(`Route not found: ${req.originalUrl}`));
+    return next(ApiError.notFound(`API route not found: ${req.originalUrl}`));
   }
   res.sendFile(path.join(clientDistPath, 'index.html'), (err) => {
     if (err) {
-      next(ApiError.notFound(`Page not found: ${req.originalUrl}`));
+      return res.status(200).json({
+        success: true,
+        message: 'FitCore API Server is running.',
+        apiBase: '/api/v1',
+        healthCheck: '/api/v1/health',
+      });
     }
   });
 });

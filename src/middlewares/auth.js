@@ -23,7 +23,11 @@ export const verifyJWT = asyncHandler(async (req, res, next) => {
       throw ApiError.unauthorized('Invalid or expired authentication token');
     }
 
-    if (user.status !== 'active') {
+    const isAuthMe =
+      req.originalUrl?.includes('/auth/me') ||
+      req.baseUrl?.includes('/auth');
+
+    if (user.status !== 'active' && !isAuthMe && !user.isSuperAdmin) {
       throw ApiError.forbidden('User account is inactive or suspended');
     }
 

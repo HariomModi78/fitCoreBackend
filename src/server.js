@@ -3,6 +3,7 @@ dotenv.config();
 
 import app from './app.js';
 import connectDB from './config/db.js';
+import { initNightlyScheduler } from './services/nightlyScheduler.js';
 
 const PORT = process.env.PORT || 5000;
 
@@ -10,6 +11,9 @@ const startServer = async () => {
   try {
     // Connect to database
     await connectDB();
+
+    // Start background nightly scheduler (runs every night at 02:00 AM when server is idle)
+    initNightlyScheduler(2, 0);
 
     const server = app.listen(PORT, () => {
       console.log(`===============================================`);

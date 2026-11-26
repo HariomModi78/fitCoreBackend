@@ -33,6 +33,7 @@ const userSchema = new mongoose.Schema(
     isSuperAdmin: {
       type: Boolean,
       default: false,
+      immutable: true,
     },
     status: {
       type: String,
@@ -43,13 +44,22 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    phoneVerified: {
+      type: Boolean,
+      default: false,
+    },
     verificationToken: String,
     resetPasswordToken: String,
     resetPasswordExpire: Date,
+    phoneOtp: String,
+    phoneOtpExpire: Date,
     lastLogin: Date,
   },
   { timestamps: true }
 );
+
+// 1. Phone number lookup for WhatsApp OTP login & staff verification (sparse allows users without phone). Without it: Full user collection scan on every OTP request.
+userSchema.index({ phone: 1 }, { sparse: true });
 
 // Hash password before save
 userSchema.pre('save', async function (next) {

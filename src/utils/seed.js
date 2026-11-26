@@ -59,6 +59,7 @@ const seedDatabase = async () => {
       phone: '9876543210',
       avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
       status: 'active',
+      phoneVerified: true,
     });
 
     // 3. Create Gym (Vikram Gym)
@@ -105,9 +106,13 @@ const seedDatabase = async () => {
     await GymSaaSSubscription.create({
       gymId: gym._id,
       planId: growthPlan._id,
+      planNameSnapshot: growthPlan.name,
+      durationSnapshot: growthPlan.duration,
+      durationUnitSnapshot: growthPlan.durationUnit,
+      amount: growthPlan.price,
+      startDate: new Date(),
+      endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       status: 'active',
-      currentPeriodStart: new Date(),
-      currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     });
 
     // 5. Create Membership Plans (from image 3)

@@ -16,7 +16,12 @@ export const requireActiveSaaS = asyncHandler(async (req, res, next) => {
 
   const now = new Date();
   const expiresAt = gym.saasExpiresAt ? new Date(gym.saasExpiresAt) : null;
-  const isExpired = !expiresAt || now > expiresAt;
+  const trialEndsAt = gym.trialEndsAt ? new Date(gym.trialEndsAt) : null;
+  
+  // Gym has active access if within valid SaaS expiry date or within active trial period
+  const hasValidExpiresAt = expiresAt && now <= expiresAt;
+  const hasValidTrial = (gym.saasStatus === 'trial' || !expiresAt) && trialEndsAt && now <= trialEndsAt;
+  const isExpired = !hasValidExpiresAt && !hasValidTrial;
 
   if (isExpired) {
     if (gym.saasStatus !== 'expired') {

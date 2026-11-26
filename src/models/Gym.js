@@ -112,5 +112,11 @@ const gymSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// 1. Owner Login Lookup: loads the owner's gym immediately upon authentication. Without it: Scans all gyms in database on every owner login.
+gymSchema.index({ ownerId: 1 });
+
+// 2. Gym lookup by phone number (e.g. support, SaaS verification, OTP). Without it: Full collection scan when resolving gym by phone.
+gymSchema.index({ phone: 1 });
+
 export const Gym = mongoose.model('Gym', gymSchema);
 export default Gym;

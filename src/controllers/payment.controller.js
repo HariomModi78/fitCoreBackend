@@ -35,7 +35,7 @@ export const getPayments = asyncHandler(async (req, res) => {
   const payments = await Payment.find(query)
     .populate('memberId', 'name memberCode phone email avatar')
     .populate('subscriptionId', 'planNameSnapshot startDate endDate payableAmount amountPaid dueAmount')
-    .sort({ paymentDate: -1 })
+    .sort({ paymentDate: -1, createdAt: -1, _id: -1 })
     .skip(skip)
     .limit(parseInt(limit));
 
@@ -214,15 +214,31 @@ export const recordPayment = asyncHandler(async (req, res) => {
   const paymentCount = await Payment.countDocuments({ gymId: req.gymId });
   const receiptNumber = `REC-${String(paymentCount + 1).padStart(5, '0')}`;
 
+  let resolvedPaymentDate = new Date();
+  if (paymentDate) {
+    const parsedDate = new Date(paymentDate);
+    const today = new Date();
+    if (parsedDate.toDateString() === today.toDateString()) {
+      resolvedPaymentDate = today;
+    } else {
+      resolvedPaymentDate = parsedDate;
+    }
+  }
+
+  const newAmountPaid = (subscription.amountPaid || 0) + parsedAmount;
+  const newDueAmount = (subscription.payableAmount || 0) - newAmountPaid;
+
   const payment = await Payment.create({
     gymId: req.gymId,
     memberId: member._id,
     subscriptionId: subscription._id,
     receiptNumber,
     amount: parsedAmount,
+    amountPaidSnapshot: newAmountPaid,
+    remainingBalanceSnapshot: newDueAmount,
     paymentMethod,
     transactionReference,
-    paymentDate: new Date(paymentDate),
+    paymentDate: resolvedPaymentDate,
     recordedBy: req.user._id,
     recordedByName: req.user.name,
     notes,
@@ -230,8 +246,8 @@ export const recordPayment = asyncHandler(async (req, res) => {
   });
 
   // Update subscription amountPaid, dueAmount & paymentStatus
-  subscription.amountPaid = (subscription.amountPaid || 0) + parsedAmount;
-  subscription.dueAmount = (subscription.payableAmount || 0) - subscription.amountPaid;
+  subscription.amountPaid = newAmountPaid;
+  subscription.dueAmount = newDueAmount;
 
   if (subscription.dueAmount < 0) {
     subscription.paymentStatus = 'overpaid'; // Advance payment / credit
@@ -284,6 +300,40 @@ export const getReceipt = asyncHandler(async (req, res) => {
 
   const gym = req.gym;
 
+  // Accurately determine the snapshot of amount paid & remaining balance AT THE TIME of this payment
+  let amountPaidSnapshot;
+  let remainingBalanceSnapshot;
+
+  if (
+    typeof payment.amountPaidSnapshot === 'number' &&
+    typeof payment.remainingBalanceSnapshot === 'number'
+  ) {
+    amountPaidSnapshot = payment.amountPaidSnapshot;
+    remainingBalanceSnapshot = payment.remainingBalanceSnapshot;
+  } else if (payment.subscriptionId) {
+    // Dynamically compute historical snapshot for records created before snapshot schema
+    const subPayments = await Payment.find({
+      gymId: req.gymId,
+      subscriptionId: payment.subscriptionId._id,
+      status: 'completed',
+    }).sort({ paymentDate: 1, createdAt: 1, _id: 1 });
+
+    let runningTotal = 0;
+    for (const p of subPayments) {
+      runningTotal += p.amount;
+      if (p._id.toString() === payment._id.toString()) {
+        break;
+      }
+    }
+
+    amountPaidSnapshot = runningTotal;
+    const payable = payment.subscriptionId.payableAmount || 0;
+    remainingBalanceSnapshot = payable - runningTotal;
+  } else {
+    amountPaidSnapshot = payment.amount;
+    remainingBalanceSnapshot = 0;
+  }
+
   const receiptData = {
     gym: {
       name: gym.name,
@@ -311,10 +361,8 @@ export const getReceipt = asyncHandler(async (req, res) => {
       discountAmount: payment.subscriptionId?.discountAmount,
       discountReason: payment.subscriptionId?.discountReason,
       payableAmount: payment.subscriptionId?.payableAmount,
-      amountPaidTotal: payment.subscriptionId?.amountPaid,
-      remainingBalance:
-        (payment.subscriptionId?.payableAmount || 0) -
-        (payment.subscriptionId?.amountPaid || 0),
+      amountPaidTotal: amountPaidSnapshot,
+      remainingBalance: remainingBalanceSnapshot,
       dueReminderDate: payment.subscriptionId?.dueReminderDate,
       dueReminderDays: payment.subscriptionId?.dueReminderDays,
       dueReminderNotes: payment.subscriptionId?.dueReminderNotes,

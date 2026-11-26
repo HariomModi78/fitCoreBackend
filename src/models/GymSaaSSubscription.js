@@ -35,9 +35,8 @@ const gymSaaSSubscriptionSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['active', 'expired', 'cancelled'],
-      default: 'active',
-      index: true,
+      enum: ['trial', 'active', 'expired', 'cancelled'],
+      default: 'trial',
     },
     startDate: {
       type: Date,
@@ -46,7 +45,6 @@ const gymSaaSSubscriptionSchema = new mongoose.Schema(
     endDate: {
       type: Date,
       required: true,
-      index: true,
     },
     paymentGateway: {
       type: String,
@@ -62,6 +60,12 @@ const gymSaaSSubscriptionSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// 1. Gym SaaS status check (verifies if gym's platform license is active/trial). Without it: Full collection scan on every SaaS middleware license check.
+gymSaaSSubscriptionSchema.index({ gymId: 1, status: 1 });
+
+// 2. SaaS expiration check: scans for gyms whose software subscription is ending. Without it: Slow scan across all SaaS subscriptions.
+gymSaaSSubscriptionSchema.index({ gymId: 1, endDate: 1 });
 
 export const GymSaaSSubscription = mongoose.model(
   'GymSaaSSubscription',

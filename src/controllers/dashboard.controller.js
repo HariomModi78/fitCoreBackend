@@ -11,6 +11,13 @@ export const getDashboardSummary = asyncHandler(async (req, res) => {
   const now = new Date();
   const range = (req.query.range || 'this_month').toLowerCase();
 
+  // Determine if the user has permission to view gym financials/revenue
+  const canViewFinancials =
+    req.user?.isSuperAdmin === true ||
+    req.gymRole === 'owner' ||
+    (Array.isArray(req.permissions) &&
+      (req.permissions.includes('view_reports') || req.permissions.includes('view_payments')));
+
   let startDate, endDate, prevStartDate, prevEndDate;
   let chartBuckets = [];
 
@@ -73,16 +80,8 @@ export const getDashboardSummary = asyncHandler(async (req, res) => {
 
   const sevenDaysFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-  // 1. Core Summary Metrics
-  const [
-    totalMembers,
-    activeMembers,
-    expiredMembers,
-    pendingMembers,
-    upcomingRenewals,
-    currentPayments,
-    previousPayments,
-  ] = await Promise.all([
+  // 1. Core Summary Metrics (Financial payment queries only execute if authorized)
+  const summaryQueries = [
     Member.countDocuments({ gymId, status: { $ne: 'archived' } }),
     Member.countDocuments({ gymId, status: 'active' }),
     Member.countDocuments({ gymId, status: 'expired' }),
@@ -92,60 +91,80 @@ export const getDashboardSummary = asyncHandler(async (req, res) => {
       status: 'active',
       endDate: { $gte: now, $lte: sevenDaysFromNow },
     }),
-    Payment.find({
-      gymId,
-      status: 'completed',
-      paymentDate: { $gte: startDate, $lte: endDate },
-    }),
-    Payment.find({
-      gymId,
-      status: 'completed',
-      paymentDate: { $gte: prevStartDate, $lte: prevEndDate },
-    }),
-  ]);
+  ];
 
-  const revenueThisPeriod = currentPayments.reduce((sum, p) => sum + p.amount, 0);
-  const revenuePrevPeriod = previousPayments.reduce((sum, p) => sum + p.amount, 0);
-
-  let revenueGrowthPct = 0;
-  if (revenuePrevPeriod > 0) {
-    revenueGrowthPct = Math.round(((revenueThisPeriod - revenuePrevPeriod) / revenuePrevPeriod) * 100);
-  } else if (revenueThisPeriod > 0) {
-    revenueGrowthPct = 100;
+  if (canViewFinancials) {
+    summaryQueries.push(
+      Payment.find({
+        gymId,
+        status: 'completed',
+        paymentDate: { $gte: startDate, $lte: endDate },
+      }),
+      Payment.find({
+        gymId,
+        status: 'completed',
+        paymentDate: { $gte: prevStartDate, $lte: prevEndDate },
+      })
+    );
   }
 
-  // 2. Aggregate Payments into chartBuckets
-  if (range === 'this_week') {
-    // Map day 1=Mon, ..., 0=Sun to bucket 0..6
-    currentPayments.forEach((p) => {
-      const pDay = new Date(p.paymentDate).getDay();
-      const idx = pDay === 0 ? 6 : pDay - 1;
-      if (chartBuckets[idx]) chartBuckets[idx].revenue += p.amount;
-    });
-  } else if (range === 'this_year') {
-    currentPayments.forEach((p) => {
-      const pMonth = new Date(p.paymentDate).getMonth();
-      if (chartBuckets[pMonth]) chartBuckets[pMonth].revenue += p.amount;
-    });
+  const queryResults = await Promise.all(summaryQueries);
+  const totalMembers = queryResults[0];
+  const activeMembers = queryResults[1];
+  const expiredMembers = queryResults[2];
+  const pendingMembers = queryResults[3];
+  const upcomingRenewals = queryResults[4];
+  const currentPayments = canViewFinancials ? queryResults[5] || [] : [];
+  const previousPayments = canViewFinancials ? queryResults[6] || [] : [];
+
+  let revenueThisPeriod = null;
+  let revenueGrowthPct = null;
+
+  if (canViewFinancials) {
+    revenueThisPeriod = currentPayments.reduce((sum, p) => sum + p.amount, 0);
+    const revenuePrevPeriod = previousPayments.reduce((sum, p) => sum + p.amount, 0);
+
+    if (revenuePrevPeriod > 0) {
+      revenueGrowthPct = Math.round(((revenueThisPeriod - revenuePrevPeriod) / revenuePrevPeriod) * 100);
+    } else if (revenueThisPeriod > 0) {
+      revenueGrowthPct = 100;
+    } else {
+      revenueGrowthPct = 0;
+    }
+
+    // Aggregate Payments into chartBuckets
+    if (range === 'this_week') {
+      currentPayments.forEach((p) => {
+        const pDay = new Date(p.paymentDate).getDay();
+        const idx = pDay === 0 ? 6 : pDay - 1;
+        if (chartBuckets[idx]) chartBuckets[idx].revenue += p.amount;
+      });
+    } else if (range === 'this_year') {
+      currentPayments.forEach((p) => {
+        const pMonth = new Date(p.paymentDate).getMonth();
+        if (chartBuckets[pMonth]) chartBuckets[pMonth].revenue += p.amount;
+      });
+    } else {
+      currentPayments.forEach((p) => {
+        const dateNum = new Date(p.paymentDate).getDate();
+        if (dateNum <= 7) chartBuckets[0].revenue += p.amount;
+        else if (dateNum <= 14) chartBuckets[1].revenue += p.amount;
+        else if (dateNum <= 21) chartBuckets[2].revenue += p.amount;
+        else chartBuckets[3].revenue += p.amount;
+      });
+    }
   } else {
-    // Weeks of Month (1-7, 8-14, 15-21, 22+)
-    currentPayments.forEach((p) => {
-      const dateNum = new Date(p.paymentDate).getDate();
-      if (dateNum <= 7) chartBuckets[0].revenue += p.amount;
-      else if (dateNum <= 14) chartBuckets[1].revenue += p.amount;
-      else if (dateNum <= 21) chartBuckets[2].revenue += p.amount;
-      else chartBuckets[3].revenue += p.amount;
-    });
+    chartBuckets = [];
   }
 
-  // 3. Membership Status Breakdown (100% real database counts)
+  // 2. Membership Status Breakdown (100% real database counts)
   const statusBreakdown = [
     { name: 'Active', value: activeMembers, color: '#10B981' },
     { name: 'Expired', value: expiredMembers, color: '#FF7A00' },
     { name: 'Pending', value: pendingMembers, color: '#D1D5DB' },
   ];
 
-  // 4. Popular Membership Plans with Percentages
+  // 3. Popular Membership Plans with Percentages
   const plans = await MembershipPlan.find({ gymId, status: { $ne: 'archived' } });
   const allSubscriptionsCount = await Subscription.countDocuments({ gymId });
 
@@ -163,7 +182,7 @@ export const getDashboardSummary = asyncHandler(async (req, res) => {
       return {
         id: plan._id,
         name: plan.name,
-        price: plan.price,
+        price: canViewFinancials ? plan.price : null,
         duration: plan.duration,
         durationUnit: plan.durationUnit,
         enrollments,
@@ -174,12 +193,18 @@ export const getDashboardSummary = asyncHandler(async (req, res) => {
 
   popularPlans.sort((a, b) => b.enrollments - a.enrollments);
 
-  // 5. Recent Activities (from AuditLog, with smart fallback to recent real records)
+  // 4. Recent Activities (sanitized for unauthorized staff)
   const auditLogs = await AuditLog.find({ gymId })
     .sort({ createdAt: -1 })
-    .limit(6);
+    .limit(10);
 
-  let formattedActivities = auditLogs.map((log) => {
+  let formattedActivities = [];
+
+  for (const log of auditLogs) {
+    if (log.action === 'EXPENSE_CREATE' && !canViewFinancials) {
+      continue;
+    }
+
     let title = 'Gym Activity';
     let detail = '';
 
@@ -188,7 +213,9 @@ export const getDashboardSummary = asyncHandler(async (req, res) => {
       detail = log.details?.name ? `${log.details.name} (${log.details.memberCode || ''})` : 'New Member';
     } else if (log.action === 'PAYMENT_RECORD') {
       title = 'Payment received';
-      detail = `₹${(log.details?.amount || 0).toLocaleString()} • ${log.details?.receiptNumber || 'Receipt'}`;
+      detail = canViewFinancials
+        ? `₹${(log.details?.amount || 0).toLocaleString()} • ${log.details?.receiptNumber || 'Receipt'}`
+        : `Payment processed • ${log.details?.receiptNumber || 'Receipt'}`;
     } else if (log.action === 'SUBSCRIPTION_RENEW') {
       title = 'Membership renewed';
       detail = log.details?.planName || 'Plan Renewed';
@@ -200,27 +227,28 @@ export const getDashboardSummary = asyncHandler(async (req, res) => {
       detail = `${log.details?.title || 'Expense'} (₹${log.details?.amount || 0})`;
     }
 
-    return {
+    formattedActivities.push({
       id: log._id,
       title,
       detail,
       time: log.createdAt,
-    };
-  });
+    });
 
-  // If auditLogs are sparse, supplement with real recent payments & members
+    if (formattedActivities.length >= 5) break;
+  }
+
+  // If auditLogs are sparse and user is authorized, supplement with payments/members
   if (formattedActivities.length < 3) {
-    const recentPayments = await Payment.find({ gymId })
-      .populate('memberId', 'name')
-      .sort({ paymentDate: -1 })
+    const recentMembers = await Member.find({ gymId, status: { $ne: 'archived' } })
+      .sort({ createdAt: -1 })
       .limit(3);
 
-    recentPayments.forEach((p) => {
+    recentMembers.forEach((m) => {
       formattedActivities.push({
-        id: p._id,
-        title: 'Payment received',
-        detail: `${p.memberId?.name || 'Member'} • ₹${p.amount.toLocaleString()} (${p.receiptNumber})`,
-        time: p.paymentDate,
+        id: m._id,
+        title: 'New member registered',
+        detail: `${m.name} (${m.memberCode || 'Member'})`,
+        time: m.createdAt,
       });
     });
 
@@ -229,6 +257,7 @@ export const getDashboardSummary = asyncHandler(async (req, res) => {
   }
 
   return ApiResponse.success(res, {
+    canViewFinancials,
     metrics: {
       totalMembers,
       activeMembers,

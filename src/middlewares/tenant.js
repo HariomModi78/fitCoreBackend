@@ -10,15 +10,17 @@ export const requireTenant = asyncHandler(async (req, res, next) => {
     req.query.gymId ||
     req.body.gymId;
 
-  // If no explicit gymId is provided, look for the user's first active gym membership
-  let membership;
+  // If no explicit gymId is provided or if target gym doesn't belong to user, find the user's active gym membership
+  let membership = null;
   if (targetGymId) {
     membership = await GymMembership.findOne({
       userId: req.user._id,
       gymId: targetGymId,
       status: 'active',
     });
-  } else {
+  }
+
+  if (!membership) {
     membership = await GymMembership.findOne({
       userId: req.user._id,
       status: 'active',

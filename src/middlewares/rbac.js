@@ -10,11 +10,11 @@ export const requireRole = (...roles) => {
   };
 };
 
-export const requirePermission = (permission) => {
+export const requirePermission = (...permissions) => {
   return (req, res, next) => {
     if (req.user?.isSuperAdmin || req.gymRole === 'owner') return next();
-    if (!req.permissions || !req.permissions.includes(permission)) {
-      throw ApiError.forbidden(`Missing required permission: ${permission}`);
+    if (!req.permissions || !permissions.some((p) => req.permissions.includes(p))) {
+      throw ApiError.forbidden(`Missing required permission: ${permissions.join(' or ')}`);
     }
     next();
   };

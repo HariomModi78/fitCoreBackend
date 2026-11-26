@@ -2,6 +2,7 @@ import SaaSPlan from '../models/SaaSPlan.js';
 import GymSaaSSubscription from '../models/GymSaaSSubscription.js';
 import Gym from '../models/Gym.js';
 import AuditLog from '../models/AuditLog.js';
+import Notification from '../models/Notification.js';
 import ApiResponse from '../utils/apiResponse.js';
 import ApiError from '../utils/apiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -9,6 +10,10 @@ import {
   createRazorpayOrder,
   verifyRazorpayPayment,
 } from '../utils/razorpayService.js';
+import {
+  dispatchWhatsAppMessage,
+  generateWhatsAppUrl,
+} from '../utils/whatsappService.js';
 
 // Helper to compute future date from duration & unit
 export const computeFutureDate = (baseDate, duration, durationUnit) => {
@@ -188,7 +193,7 @@ export const verifyAndActivateSubscription = asyncHandler(async (req, res) => {
   const { planId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
   const gymId = req.gymId;
 
-  const isValid = verifyRazorpayPayment({
+  const isValid = await verifyRazorpayPayment({
     orderId: razorpayOrderId,
     paymentId: razorpayPaymentId,
     signature: razorpaySignature,
@@ -234,25 +239,96 @@ export const verifyAndActivateSubscription = asyncHandler(async (req, res) => {
     status: 'active',
   });
 
-  await AuditLog.create({
-    gymId: gym._id,
-    userId: req.user._id,
-    action: 'SAAS_SUBSCRIPTION_PURCHASE',
-    details: {
-      planName: plan.name,
-      amount: plan.price,
-      newExpiresAt: newEndDate,
-      paymentId: razorpayPaymentId,
-    },
+  try {
+    await AuditLog.create({
+      gymId: gym._id,
+      userId: req.user._id,
+      action: 'SAAS_SUBSCRIPTION_PURCHASE',
+      details: {
+        planName: plan.name,
+        amount: plan.price,
+        newExpiresAt: newEndDate,
+        paymentId: razorpayPaymentId,
+      },
+    });
+  } catch (auditErr) {
+    console.warn('[SaaS AuditLog Warning]:', auditErr.message);
+  }
+
+  // 1. Prepare WhatsApp congratulations message with plan details and expiry
+  const targetPhone = gym.phone || req.user?.phone || '';
+  const expiryFormatted = newEndDate.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
   });
+
+  const whatsappMessage = `🎉 *Congratulations from FitCore!*
+
+Hi *${gym.name}*, your FitCore Gym Management SaaS subscription has been successfully activated! 🚀
+
+📋 *Subscription Details:*
+• Plan: *${plan.name}*
+• Duration: *${plan.duration} ${plan.durationUnit}*
+• Amount Paid: *₹${Number(plan.price).toLocaleString('en-IN')}*
+• Payment Gateway: *Razorpay* (${razorpayPaymentId || 'Verified'})
+• Valid Until: *${expiryFormatted}*
+
+✨ All core features—including member registrations, payment & expense management, automated WhatsApp renewal alerts, and business reports—are active.
+
+Thank you for choosing FitCore. Stronger Together!
+📞 Support: support@fitcore.app | fitcore.app`;
+
+  // 2. Dispatch WhatsApp message to gym's phone number
+  let whatsappResult = null;
+  const whatsappUrl = targetPhone ? generateWhatsAppUrl(targetPhone, whatsappMessage) : null;
+
+  if (targetPhone) {
+    try {
+      whatsappResult = await dispatchWhatsAppMessage({
+        phone: targetPhone,
+        text: whatsappMessage,
+      });
+      console.log(`[SaaS Purchase]: WhatsApp confirmation dispatched to ${targetPhone} (via: ${whatsappResult?.via})`);
+    } catch (waErr) {
+      console.warn('[SaaS WhatsApp Dispatch Warning]:', waErr.message);
+    }
+  }
+
+  // 3. Create In-App Notification Record for Gym
+  let notificationRecord = null;
+  try {
+    notificationRecord = await Notification.create({
+      gymId: gym._id,
+      type: 'subscription_renewed',
+      title: `🎉 FitCore Subscription Activated: ${plan.name}`,
+      message: whatsappMessage,
+      recipientPhone: targetPhone,
+      whatsappUrl,
+      whatsappStatus: {
+        sent: whatsappResult?.success || false,
+        sentAt: whatsappResult?.success ? new Date() : null,
+        messageId: whatsappResult?.messageId || null,
+        deliveryStatus: whatsappResult?.success ? 'sent' : 'pending',
+        error: whatsappResult?.error || null,
+      },
+      isRead: false,
+    });
+  } catch (notifErr) {
+    console.warn('[SaaS Notification Record Warning]:', notifErr.message);
+  }
 
   return ApiResponse.success(
     res,
     {
       gym,
       subscription,
+      notification: notificationRecord,
+      whatsappUrl,
+      whatsappResult,
+      targetPhone,
     },
-    `Congratulations! Your FitCore subscription is active until ${newEndDate.toLocaleDateString()}.`
+    `Congratulations! Your FitCore subscription is active until ${expiryFormatted}. Confirmation notification sent to ${targetPhone || 'your gym'}.`
   );
 });
 

@@ -84,11 +84,11 @@ export const getMemberById = asyncHandler(async (req, res) => {
     gymId: req.gymId,
   }).sort({ createdAt: -1 });
 
-  // Fetch payment history
+  // Fetch payment history (latest transaction at top)
   const payments = await Payment.find({
     memberId: member._id,
     gymId: req.gymId,
-  }).sort({ paymentDate: -1 });
+  }).sort({ paymentDate: -1, createdAt: -1, _id: -1 });
 
   // Calculate balance
   const totalPayable = subscriptions.reduce((sum, s) => sum + (s.payableAmount || 0), 0);
