@@ -93,38 +93,29 @@ export const register = asyncHandler(async (req, res) => {
     status: 'active',
   });
 
-  // Create default SaaS subscription (14-day trial)
-  let defaultSaaSPlan = await SaaSPlan.findOne({ isActive: true }).sort({ sortOrder: 1, price: 1 });
-  if (!defaultSaaSPlan) {
-    defaultSaaSPlan = await SaaSPlan.create({
-      name: 'FitCore Growth Pro',
-      price: 2199,
-      duration: 3,
-      durationUnit: 'months',
-      badge: 'Popular',
-      isActive: true,
-    });
-  }
-
+  // Check if an active SaaS plan exists (do not auto-create if none exists)
+  const defaultSaaSPlan = await SaaSPlan.findOne({ isActive: true }).sort({ sortOrder: 1, price: 1 });
   const trialEnds = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
 
-  await GymSaaSSubscription.create({
-    gymId: gym._id,
-    planId: defaultSaaSPlan._id,
-    planNameSnapshot: defaultSaaSPlan.name,
-    durationSnapshot: defaultSaaSPlan.duration,
-    durationUnitSnapshot: defaultSaaSPlan.durationUnit,
-    amount: 0,
-    currency: 'INR',
-    status: 'trial',
-    startDate: new Date(),
-    endDate: trialEnds,
-    paymentGateway: 'none',
-    purchasedBy: user._id,
-  });
+  if (defaultSaaSPlan) {
+    await GymSaaSSubscription.create({
+      gymId: gym._id,
+      planId: defaultSaaSPlan._id,
+      planNameSnapshot: defaultSaaSPlan.name,
+      durationSnapshot: defaultSaaSPlan.duration,
+      durationUnitSnapshot: defaultSaaSPlan.durationUnit,
+      amount: 0,
+      currency: 'INR',
+      status: 'trial',
+      startDate: new Date(),
+      endDate: trialEnds,
+      paymentGateway: 'none',
+      purchasedBy: user._id,
+    });
+    gym.saasPlanId = defaultSaaSPlan._id;
+  }
 
-  // Ensure gym record has trial expiry and saasPlanId set
-  gym.saasPlanId = defaultSaaSPlan._id;
+  // Ensure gym record has trial expiry set
   gym.saasStatus = 'trial';
   gym.trialEndsAt = trialEnds;
   gym.saasExpiresAt = trialEnds;

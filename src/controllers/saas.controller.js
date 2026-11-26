@@ -50,42 +50,7 @@ export const getSaaSPlans = asyncHandler(async (req, res) => {
   );
 
   const query = req.user?.isSuperAdmin ? {} : { isActive: true };
-  let plans = await SaaSPlan.find(query).sort({ sortOrder: 1, price: 1 });
-
-  // If no plans exist yet, seed default standard plans automatically
-  if (plans.length === 0) {
-    const defaultPlans = [
-      {
-        name: 'Monthly License',
-        duration: 1,
-        durationUnit: 'months',
-        price: 799,
-        description: 'Monthly unlimited gym management with automated WhatsApp alerts',
-        badge: 'Starter',
-        sortOrder: 1,
-      },
-      {
-        name: 'Quarterly Pro',
-        duration: 3,
-        durationUnit: 'months',
-        price: 2199,
-        description: '3 months full access. Save ~10% on quarterly billing',
-        badge: 'Most Popular',
-        sortOrder: 2,
-      },
-      {
-        name: 'Annual Freedom',
-        duration: 12,
-        durationUnit: 'months',
-        price: 6999,
-        description: '1 full year uninterrupted automation. Best value for serious gym owners',
-        badge: 'Best Value',
-        sortOrder: 3,
-      },
-    ];
-
-    plans = await SaaSPlan.insertMany(defaultPlans);
-  }
+  const plans = await SaaSPlan.find(query).sort({ sortOrder: 1, price: 1 });
 
   // Ensure all plans have a safe numeric price and duration
   const sanitizedPlans = plans.map((p) => {
