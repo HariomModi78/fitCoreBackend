@@ -72,8 +72,11 @@ app.get(['/', '/health', '/api/v1/health'], (req, res) => {
   );
 });
 
-// Mount All API v1 Routes
+// Mount All API Routes under /api/v1 as well as direct paths (/auth, /members, etc.)
+// This guarantees that whether the frontend calls /api/v1/auth/login or /auth/login, it works seamlessly!
 app.use('/api/v1', apiRouter);
+app.use('/api', apiRouter);
+app.use(apiRouter);
 
 // Serve built frontend static assets in production (if frontend was bundled with backend)
 app.use(express.static(clientDistPath));
