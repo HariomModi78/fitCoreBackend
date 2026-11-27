@@ -10,6 +10,7 @@ import ApiError from '../utils/apiError.js';
 import ApiResponse from '../utils/apiResponse.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { sendWhatsAppOtp, formatPhoneNumberForWhatsApp } from '../utils/whatsappService.js';
+import { sendEmailOtp, formatMaskedEmail } from '../utils/emailService.js';
 
 const generateToken = (userId) => {
   return jwt.sign(
@@ -148,20 +149,37 @@ export const register = asyncHandler(async (req, res) => {
 });
 
 export const login = asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
+  const rawIdentifier = (req.body.identifier || req.body.email || req.body.phone || req.body.username || '').trim();
+  const { password } = req.body;
 
-  if (!email || !password) {
-    throw ApiError.badRequest('Email and password are required');
+  if (!rawIdentifier || !password) {
+    throw ApiError.badRequest('Email or mobile number, and password are required');
   }
 
-  const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+  const isEmail = rawIdentifier.includes('@');
+  let user;
+
+  if (isEmail) {
+    user = await User.findOne({ email: rawIdentifier.toLowerCase() }).select('+password');
+  } else {
+    const digits = rawIdentifier.replace(/\D/g, '').slice(-10);
+    const conditions = [
+      { phone: rawIdentifier },
+      { email: rawIdentifier.toLowerCase() },
+    ];
+    if (digits.length >= 7) {
+      conditions.push({ phone: { $regex: digits + '$' } });
+    }
+    user = await User.findOne({ $or: conditions }).select('+password');
+  }
+
   if (!user) {
-    throw ApiError.unauthorized('Invalid email or password');
+    throw ApiError.unauthorized('Invalid email/mobile number or password');
   }
 
   const isPasswordValid = await user.comparePassword(password);
   if (!isPasswordValid) {
-    throw ApiError.unauthorized('Invalid email or password');
+    throw ApiError.unauthorized('Invalid email/mobile number or password');
   }
 
   // Find user's gyms
@@ -421,37 +439,31 @@ export const verifyWhatsAppOtpHandler = asyncHandler(async (req, res) => {
 });
 
 export const forgotPassword = asyncHandler(async (req, res) => {
-  const { identifier } = req.body;
+  const rawIdentifier = (req.body.identifier || req.body.email || req.body.phone || '').trim();
 
-  if (!identifier || !identifier.trim()) {
+  if (!rawIdentifier) {
     throw ApiError.badRequest('Please enter your registered email address or mobile number');
   }
 
-  const cleanIdentifier = identifier.trim();
-  const isEmail = cleanIdentifier.includes('@');
-
+  const isEmail = rawIdentifier.includes('@');
   let user;
   if (isEmail) {
-    user = await User.findOne({ email: cleanIdentifier.toLowerCase() });
+    user = await User.findOne({ email: rawIdentifier.toLowerCase() });
   } else {
-    const digits = cleanIdentifier.replace(/\D/g, '').slice(-10);
-    user = await User.findOne({
-      phone: { $regex: digits + '$' },
-    });
+    const digits = rawIdentifier.replace(/\D/g, '').slice(-10);
+    const conditions = [
+      { phone: rawIdentifier },
+      { email: rawIdentifier.toLowerCase() },
+    ];
+    if (digits.length >= 7) {
+      conditions.push({ phone: { $regex: digits + '$' } });
+    }
+    user = await User.findOne({ $or: conditions });
   }
 
   if (!user) {
     throw ApiError.notFound('No account found with this email or mobile number');
   }
-
-  const targetPhone = user.phone || (!isEmail ? cleanIdentifier : null);
-  if (!targetPhone) {
-    throw ApiError.badRequest(
-      'No mobile number registered with this account. Please contact gym administration.'
-    );
-  }
-
-  const formattedPhone = formatPhoneNumberForWhatsApp(targetPhone);
 
   // Enforce 60-second cooldown
   const recentOtp = await Otp.findOne({
@@ -478,28 +490,65 @@ export const forgotPassword = asyncHandler(async (req, res) => {
   user.resetPasswordExpire = expiresAt;
   await user.save({ validateBeforeSave: false });
 
+  const targetPhone = user.phone || (!isEmail ? rawIdentifier : null);
+  const formattedPhone = targetPhone ? formatPhoneNumberForWhatsApp(targetPhone) : null;
+
   // Store in Otp collection
   await Otp.deleteMany({
     identifier: user.email,
     purpose: 'forgot_password',
   });
+  if (formattedPhone) {
+    await Otp.deleteMany({
+      phone: formattedPhone,
+      purpose: 'forgot_password',
+    });
+  }
+
   await Otp.create({
     identifier: user.email,
-    phone: formattedPhone,
+    phone: formattedPhone || undefined,
     email: user.email,
     otp: hashedOtp,
     purpose: 'forgot_password',
     expiresAt,
   });
 
-  // Dispatch privately via WhatsApp
-  await sendWhatsAppOtp({
-    phone: formattedPhone,
+  // Dispatch via Email (available for all registered users)
+  const emailPromise = sendEmailOtp({
+    email: user.email,
     otp,
     purpose: 'forgot_password',
   });
 
-  const maskedPhone = formatMaskedPhone(formattedPhone);
+  // Dispatch via WhatsApp if mobile number exists
+  let whatsappPromise = null;
+  if (formattedPhone) {
+    whatsappPromise = sendWhatsAppOtp({
+      phone: formattedPhone,
+      otp,
+      purpose: 'forgot_password',
+    });
+  }
+
+  await Promise.allSettled([emailPromise, whatsappPromise].filter(Boolean));
+
+  const maskedEmail = formatMaskedEmail(user.email);
+  const maskedPhone = formattedPhone ? formatMaskedPhone(formattedPhone) : null;
+
+  let successMessage = `Password reset code sent to your email (${maskedEmail})`;
+  let channel = 'email';
+  let maskedTarget = maskedEmail;
+
+  if (maskedPhone && maskedEmail) {
+    successMessage = `Password reset code sent to your email (${maskedEmail}) and WhatsApp (${maskedPhone})`;
+    channel = 'both';
+    maskedTarget = `${maskedEmail} & WhatsApp (${maskedPhone})`;
+  } else if (maskedPhone) {
+    successMessage = `Password reset code sent to your WhatsApp (${maskedPhone})`;
+    channel = 'whatsapp';
+    maskedTarget = maskedPhone;
+  }
 
   // SECURE RESPONSE: Never return OTP or direct wa.me link with code to client
   return ApiResponse.success(
@@ -507,10 +556,12 @@ export const forgotPassword = asyncHandler(async (req, res) => {
     {
       identifier: user.email,
       maskedPhone,
-      channel: 'whatsapp',
+      maskedEmail,
+      maskedTarget,
+      channel,
       expiresAt,
     },
-    `Password reset code has been sent to your WhatsApp (${maskedPhone})`
+    successMessage
   );
 });
 
@@ -518,7 +569,7 @@ export const resetPassword = asyncHandler(async (req, res) => {
   const { identifier, otp, newPassword } = req.body;
 
   if (!identifier || !otp || !newPassword) {
-    throw ApiError.badRequest('Identifier, OTP code, and new password are required');
+    throw ApiError.badRequest('Email/mobile number, OTP code, and new password are required');
   }
 
   if (newPassword.length < 6) {
@@ -536,9 +587,14 @@ export const resetPassword = asyncHandler(async (req, res) => {
     );
   } else {
     const digits = cleanIdentifier.replace(/\D/g, '').slice(-10);
-    user = await User.findOne({
-      phone: { $regex: digits + '$' },
-    }).select('+password +resetPasswordToken +resetPasswordExpire');
+    const conditions = [
+      { phone: cleanIdentifier },
+      { email: cleanIdentifier.toLowerCase() },
+    ];
+    if (digits.length >= 7) {
+      conditions.push({ phone: { $regex: digits + '$' } });
+    }
+    user = await User.findOne({ $or: conditions }).select('+password +resetPasswordToken +resetPasswordExpire');
   }
 
   if (!user) {
@@ -574,7 +630,10 @@ export const resetPassword = asyncHandler(async (req, res) => {
   user.password = newPassword;
   user.resetPasswordToken = undefined;
   user.resetPasswordExpire = undefined;
-  user.phoneVerified = true;
+  if (user.phone) {
+    user.phoneVerified = true;
+  }
+  user.emailVerified = true;
   await user.save();
 
   // Clear Otp records
@@ -582,6 +641,12 @@ export const resetPassword = asyncHandler(async (req, res) => {
     identifier: user.email,
     purpose: 'forgot_password',
   });
+  if (user.phone) {
+    await Otp.deleteMany({
+      phone: formatPhoneNumberForWhatsApp(user.phone),
+      purpose: 'forgot_password',
+    });
+  }
 
   return ApiResponse.success(
     res,
