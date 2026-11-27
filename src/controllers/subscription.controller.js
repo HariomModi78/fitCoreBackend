@@ -45,10 +45,13 @@ export const createSubscription = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('Member and membership plan are required');
   }
 
-  const member = await Member.findOne({ _id: memberId, gymId: req.gymId });
-  if (!member) throw ApiError.notFound('Member not found');
+  // 1. Fetch member and membership plan concurrently (cuts query latency in half)
+  const [member, plan] = await Promise.all([
+    Member.findOne({ _id: memberId, gymId: req.gymId }),
+    MembershipPlan.findOne({ _id: planId, gymId: req.gymId }),
+  ]);
 
-  const plan = await MembershipPlan.findOne({ _id: planId, gymId: req.gymId });
+  if (!member) throw ApiError.notFound('Member not found');
   if (!plan) throw ApiError.notFound('Membership plan not found');
 
   const parsedStart = new Date(startDate);
@@ -58,6 +61,7 @@ export const createSubscription = asyncHandler(async (req, res) => {
   const discount = Math.min(originalPrice, Math.max(0, parseFloat(discountAmount) || 0));
   const payableAmount = Math.max(0, originalPrice - discount);
   const initialPayment = Math.max(0, parseFloat(amountPaid) || 0);
+  const pendingDue = Math.max(0, payableAmount - initialPayment);
 
   let paymentStatus = 'unpaid';
   if (initialPayment > payableAmount) {
@@ -76,7 +80,20 @@ export const createSubscription = asyncHandler(async (req, res) => {
     subStatus = 'expired';
   }
 
-  // Create Subscription with historical snapshots
+  // 2. Pre-compute reminder fields upfront to avoid a redundant second database write
+  const parsedDueDays = parseInt(dueReminderDays, 10);
+  const hasDueReminder = pendingDue > 0 && !isNaN(parsedDueDays) && parsedDueDays > 0;
+  let reminderDate = null;
+  let reminderNotes = '';
+
+  if (hasDueReminder) {
+    reminderDate = new Date();
+    reminderDate.setDate(reminderDate.getDate() + parsedDueDays);
+    reminderDate.setHours(0, 0, 0, 0);
+    reminderNotes = dueReminderNotes || `Promised in ${parsedDueDays} days`;
+  }
+
+  // 3. Create Subscription with complete snapshots in a single write
   const subscription = await Subscription.create({
     gymId: req.gymId,
     memberId: member._id,
@@ -89,20 +106,32 @@ export const createSubscription = asyncHandler(async (req, res) => {
     discountReason,
     payableAmount,
     amountPaid: initialPayment,
-    dueAmount: payableAmount - initialPayment,
+    dueAmount: pendingDue,
     startDate: parsedStart,
     endDate: parsedEnd,
     status: subStatus,
     paymentStatus,
     notes,
+    dueReminderDays: hasDueReminder ? parsedDueDays : null,
+    dueReminderDate: reminderDate,
+    dueReminderNotes: reminderNotes,
     createdBy: req.user._id,
   });
 
-  // If payment was provided, record Payment record with unique receipt
+  // 4. Record Payment if initial payment was provided (fast single-record index lookup)
   let paymentRecord = null;
   if (initialPayment > 0) {
-    const paymentCount = await Payment.countDocuments({ gymId: req.gymId });
-    const receiptNumber = `REC-${String(paymentCount + 1).padStart(5, '0')}`;
+    const lastPayment = await Payment.findOne({ gymId: req.gymId })
+      .sort({ createdAt: -1 })
+      .select('receiptNumber')
+      .lean();
+
+    let nextNumber = 1;
+    if (lastPayment?.receiptNumber) {
+      const match = lastPayment.receiptNumber.match(/(\d+)/);
+      if (match) nextNumber = parseInt(match[1], 10) + 1;
+    }
+    const receiptNumber = `REC-${String(nextNumber).padStart(5, '0')}`;
 
     paymentRecord = await Payment.create({
       gymId: req.gymId,
@@ -111,7 +140,7 @@ export const createSubscription = asyncHandler(async (req, res) => {
       receiptNumber,
       amount: initialPayment,
       amountPaidSnapshot: initialPayment,
-      remainingBalanceSnapshot: (payableAmount || 0) - initialPayment,
+      remainingBalanceSnapshot: pendingDue,
       paymentMethod,
       transactionReference,
       paymentDate: new Date(),
@@ -121,55 +150,49 @@ export const createSubscription = asyncHandler(async (req, res) => {
     });
   }
 
-  // If there's an outstanding due balance and a reminder was scheduled
-  const pendingDue = Math.max(0, payableAmount - initialPayment);
-
-  // Update member's current subscription, status & cached dueAmount (Hybrid Pattern)
+  // 5. Update member and dispatch notification + audit concurrently in a single round-trip
   member.currentSubscriptionId = subscription._id;
   member.status = subStatus;
   member.dueAmount = pendingDue;
-  await member.save();
-  const parsedDueDays = parseInt(dueReminderDays, 10);
-  if (pendingDue > 0 && !isNaN(parsedDueDays) && parsedDueDays > 0) {
-    const reminderDate = new Date();
-    reminderDate.setDate(reminderDate.getDate() + parsedDueDays);
-    reminderDate.setHours(0, 0, 0, 0);
 
-    subscription.dueReminderDays = parsedDueDays;
-    subscription.dueReminderDate = reminderDate;
-    subscription.dueReminderNotes = dueReminderNotes || `Promised in ${parsedDueDays} days`;
-    await subscription.save();
+  const postTasks = [member.save()];
 
-    const gym = await Gym.findById(req.gymId);
+  if (hasDueReminder) {
+    const gym = req.gym || (await Gym.findById(req.gymId));
     const dueMessage = `Hi ${member.name}, gentle reminder from ${gym?.name || 'your gym'}. You have a pending due of ₹${pendingDue.toLocaleString()} for your ${plan.name} membership. Promised date: ${reminderDate.toLocaleDateString()}. Contact: ${gym?.phone || ''}.`;
     const whatsappUrl = member.phone ? generateWhatsAppUrl(member.phone, dueMessage) : '';
 
-    await Notification.create({
-      gymId: req.gymId,
-      memberId: member._id,
-      subscriptionId: subscription._id,
-      type: 'due_reminder',
-      title: `💰 Pending Due Reminder: ${member.name} (₹${pendingDue})`,
-      message: dueMessage,
-      daysLeft: parsedDueDays,
-      recipientPhone: member.phone,
-      whatsappUrl,
-    });
+    postTasks.push(
+      Notification.create({
+        gymId: req.gymId,
+        memberId: member._id,
+        subscriptionId: subscription._id,
+        type: 'due_reminder',
+        title: `💰 Pending Due Reminder: ${member.name} (₹${pendingDue})`,
+        message: dueMessage,
+        daysLeft: parsedDueDays,
+        recipientPhone: member.phone,
+        whatsappUrl,
+      })
+    );
   }
 
-  // Audit log
-  await AuditLog.create({
-    gymId: req.gymId,
-    userId: req.user._id,
-    action: 'SUBSCRIPTION_CREATE',
-    details: {
-      memberId: member._id,
-      subscriptionId: subscription._id,
-      planName: plan.name,
-      payableAmount,
-      initialPayment,
-    },
-  });
+  postTasks.push(
+    AuditLog.create({
+      gymId: req.gymId,
+      userId: req.user._id,
+      action: 'SUBSCRIPTION_CREATE',
+      details: {
+        memberId: member._id,
+        subscriptionId: subscription._id,
+        planName: plan.name,
+        payableAmount,
+        initialPayment,
+      },
+    })
+  );
+
+  await Promise.all(postTasks);
 
   return ApiResponse.created(
     res,
@@ -192,12 +215,13 @@ export const renewSubscription = asyncHandler(async (req, res) => {
     dueReminderNotes,
   } = req.body;
 
-  const member = await Member.findOne({ _id: id, gymId: req.gymId }).populate(
-    'currentSubscriptionId'
-  );
-  if (!member) throw ApiError.notFound('Member not found');
+  // 1. Concurrently fetch member and target renewal plan
+  const [member, plan] = await Promise.all([
+    Member.findOne({ _id: id, gymId: req.gymId }).populate('currentSubscriptionId'),
+    MembershipPlan.findOne({ _id: planId, gymId: req.gymId }),
+  ]);
 
-  const plan = await MembershipPlan.findOne({ _id: planId, gymId: req.gymId });
+  if (!member) throw ApiError.notFound('Member not found');
   if (!plan) throw ApiError.notFound('Plan not found');
 
   // Determine renewal start date: if current subscription is still active and ends in future, start from current end date!
@@ -218,6 +242,7 @@ export const renewSubscription = asyncHandler(async (req, res) => {
   const discount = Math.min(originalPrice, Math.max(0, parseFloat(discountAmount) || 0));
   const payableAmount = Math.max(0, originalPrice - discount);
   const paymentAmount = Math.max(0, parseFloat(amountPaid) || 0);
+  const pendingDue = Math.max(0, payableAmount - paymentAmount);
 
   let paymentStatus = 'unpaid';
   if (paymentAmount > payableAmount) {
@@ -228,6 +253,20 @@ export const renewSubscription = asyncHandler(async (req, res) => {
     paymentStatus = 'partially_paid';
   }
 
+  // 2. Pre-compute reminder fields upfront to avoid duplicate write
+  const parsedDueDays = parseInt(dueReminderDays, 10);
+  const hasDueReminder = pendingDue > 0 && !isNaN(parsedDueDays) && parsedDueDays > 0;
+  let reminderDate = null;
+  let reminderNotes = '';
+
+  if (hasDueReminder) {
+    reminderDate = new Date();
+    reminderDate.setDate(reminderDate.getDate() + parsedDueDays);
+    reminderDate.setHours(0, 0, 0, 0);
+    reminderNotes = dueReminderNotes || `Promised in ${parsedDueDays} days`;
+  }
+
+  // 3. Create Subscription in a single write with snapshots
   const newSubscription = await Subscription.create({
     gymId: req.gymId,
     memberId: member._id,
@@ -240,18 +279,31 @@ export const renewSubscription = asyncHandler(async (req, res) => {
     discountReason,
     payableAmount,
     amountPaid: paymentAmount,
-    dueAmount: payableAmount - paymentAmount,
+    dueAmount: pendingDue,
     startDate: start,
     endDate: end,
     status: 'active',
     paymentStatus,
+    dueReminderDays: hasDueReminder ? parsedDueDays : null,
+    dueReminderDate: reminderDate,
+    dueReminderNotes: reminderNotes,
     createdBy: req.user._id,
   });
 
+  // 4. Record Payment if paid > 0 (fast index lookup)
   let paymentRecord = null;
   if (paymentAmount > 0) {
-    const paymentCount = await Payment.countDocuments({ gymId: req.gymId });
-    const receiptNumber = `REC-${String(paymentCount + 1).padStart(5, '0')}`;
+    const lastPayment = await Payment.findOne({ gymId: req.gymId })
+      .sort({ createdAt: -1 })
+      .select('receiptNumber')
+      .lean();
+
+    let nextNumber = 1;
+    if (lastPayment?.receiptNumber) {
+      const match = lastPayment.receiptNumber.match(/(\d+)/);
+      if (match) nextNumber = parseInt(match[1], 10) + 1;
+    }
+    const receiptNumber = `REC-${String(nextNumber).padStart(5, '0')}`;
 
     paymentRecord = await Payment.create({
       gymId: req.gymId,
@@ -260,7 +312,7 @@ export const renewSubscription = asyncHandler(async (req, res) => {
       receiptNumber,
       amount: paymentAmount,
       amountPaidSnapshot: paymentAmount,
-      remainingBalanceSnapshot: (payableAmount || 0) - paymentAmount,
+      remainingBalanceSnapshot: pendingDue,
       paymentMethod,
       transactionReference,
       paymentDate: new Date(),
@@ -270,53 +322,48 @@ export const renewSubscription = asyncHandler(async (req, res) => {
     });
   }
 
-  // If there's an outstanding balance and owner scheduled a reminder
-  const pendingDue = Math.max(0, payableAmount - paymentAmount);
-
-  // Update member's current subscription, status & cached dueAmount (Hybrid Pattern)
+  // 5. Update member and dispatch notification + audit concurrently
   member.currentSubscriptionId = newSubscription._id;
   member.status = 'active';
   member.dueAmount = pendingDue;
-  await member.save();
-  const parsedDueDays = parseInt(dueReminderDays, 10);
-  if (pendingDue > 0 && !isNaN(parsedDueDays) && parsedDueDays > 0) {
-    const reminderDate = new Date();
-    reminderDate.setDate(reminderDate.getDate() + parsedDueDays);
-    reminderDate.setHours(0, 0, 0, 0);
 
-    newSubscription.dueReminderDays = parsedDueDays;
-    newSubscription.dueReminderDate = reminderDate;
-    newSubscription.dueReminderNotes = dueReminderNotes || `Promised in ${parsedDueDays} days`;
-    await newSubscription.save();
+  const postTasks = [member.save()];
 
-    const gym = await Gym.findById(req.gymId);
+  if (hasDueReminder) {
+    const gym = req.gym || (await Gym.findById(req.gymId));
     const dueMessage = `Hi ${member.name}, gentle reminder from ${gym?.name || 'your gym'}. You have a pending due of ₹${pendingDue.toLocaleString()} for your ${plan.name} renewal. Promised date: ${reminderDate.toLocaleDateString()}. Contact: ${gym?.phone || ''}.`;
     const whatsappUrl = member.phone ? generateWhatsAppUrl(member.phone, dueMessage) : '';
 
-    await Notification.create({
-      gymId: req.gymId,
-      memberId: member._id,
-      subscriptionId: newSubscription._id,
-      type: 'due_reminder',
-      title: `💰 Pending Due Reminder: ${member.name} (₹${pendingDue})`,
-      message: dueMessage,
-      daysLeft: parsedDueDays,
-      recipientPhone: member.phone,
-      whatsappUrl,
-    });
+    postTasks.push(
+      Notification.create({
+        gymId: req.gymId,
+        memberId: member._id,
+        subscriptionId: newSubscription._id,
+        type: 'due_reminder',
+        title: `💰 Pending Due Reminder: ${member.name} (₹${pendingDue})`,
+        message: dueMessage,
+        daysLeft: parsedDueDays,
+        recipientPhone: member.phone,
+        whatsappUrl,
+      })
+    );
   }
 
-  await AuditLog.create({
-    gymId: req.gymId,
-    userId: req.user._id,
-    action: 'SUBSCRIPTION_RENEW',
-    details: {
-      memberId: member._id,
-      subscriptionId: newSubscription._id,
-      planName: plan.name,
-      amountPaid: paymentAmount,
-    },
-  });
+  postTasks.push(
+    AuditLog.create({
+      gymId: req.gymId,
+      userId: req.user._id,
+      action: 'SUBSCRIPTION_RENEW',
+      details: {
+        memberId: member._id,
+        subscriptionId: newSubscription._id,
+        planName: plan.name,
+        amountPaid: paymentAmount,
+      },
+    })
+  );
+
+  await Promise.all(postTasks);
 
   return ApiResponse.created(
     res,
