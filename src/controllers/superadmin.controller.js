@@ -8,6 +8,7 @@ import AuditLog from '../models/AuditLog.js';
 import ApiResponse from '../utils/apiResponse.js';
 import ApiError from '../utils/apiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
+import { escapeRegex } from '../middlewares/sanitize.js';
 
 // 1. Global Platform Metrics & KPI Overview
 export const getPlatformStats = asyncHandler(async (req, res) => {
@@ -80,7 +81,7 @@ export const getAllGyms = asyncHandler(async (req, res) => {
   }
 
   if (search && search.trim()) {
-    const s = search.trim();
+    const s = escapeRegex(search.trim());
     query.$or = [
       { name: { $regex: s, $options: 'i' } },
       { email: { $regex: s, $options: 'i' } },
@@ -187,7 +188,7 @@ export const getPlatformUsers = asyncHandler(async (req, res) => {
 
   const query = {};
   if (search && search.trim()) {
-    const s = search.trim();
+    const s = escapeRegex(search.trim());
     query.$or = [
       { name: { $regex: s, $options: 'i' } },
       { email: { $regex: s, $options: 'i' } },

@@ -6,6 +6,7 @@ import AuditLog from '../models/AuditLog.js';
 import ApiError from '../utils/apiError.js';
 import ApiResponse from '../utils/apiResponse.js';
 import asyncHandler from '../utils/asyncHandler.js';
+import { escapeRegex } from '../middlewares/sanitize.js';
 
 export const getMembers = asyncHandler(async (req, res) => {
   const { search, status, planId, page = 1, limit = 50 } = req.query;
@@ -20,7 +21,7 @@ export const getMembers = asyncHandler(async (req, res) => {
   }
 
   if (search) {
-    const searchRegex = new RegExp(search.trim(), 'i');
+    const searchRegex = new RegExp(escapeRegex(search.trim()), 'i');
     query.$or = [
       { name: searchRegex },
       { phone: searchRegex },

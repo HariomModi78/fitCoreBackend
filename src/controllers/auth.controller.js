@@ -20,6 +20,15 @@ const generateToken = (userId) => {
   );
 };
 
+const setAuthCookie = (res, token) => {
+  res.cookie('accessToken', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+};
+
 export const register = asyncHandler(async (req, res) => {
   const { name, email, password, phone, gymName, verificationToken } = req.body;
 
@@ -123,6 +132,7 @@ export const register = asyncHandler(async (req, res) => {
   await gym.save();
 
   const token = generateToken(user._id);
+  setAuthCookie(res, token);
 
   return ApiResponse.created(
     res,
@@ -205,6 +215,7 @@ export const login = asyncHandler(async (req, res) => {
   await user.save({ validateBeforeSave: false });
 
   const token = generateToken(user._id);
+  setAuthCookie(res, token);
 
   return ApiResponse.success(
     res,
@@ -231,6 +242,15 @@ export const login = asyncHandler(async (req, res) => {
     },
     'Login successful'
   );
+});
+
+export const logout = asyncHandler(async (req, res) => {
+  res.clearCookie('accessToken', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+  });
+  return ApiResponse.success(res, null, 'Logged out successfully');
 });
 
 export const getCurrentUser = asyncHandler(async (req, res) => {

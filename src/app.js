@@ -9,6 +9,8 @@ import errorHandler from './middlewares/errorHandler.js';
 import ApiError from './utils/apiError.js';
 import ApiResponse from './utils/apiResponse.js';
 import apiRouter from './routes/index.js';
+import { sanitizeInputs } from './middlewares/sanitize.js';
+import { apiLimiter } from './middlewares/rateLimiter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,26 +21,66 @@ const app = express();
 // Trust reverse proxy (Render, Railway, Nginx, Cloudflare) for secure cookies & client IP
 app.enable('trust proxy');
 
-// Security Middlewares
+// Security Middlewares: Content Security Policy & Security Headers
 app.use(
   helmet({
-    contentSecurityPolicy: false, // Allows flexible loading in dev and production
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: [
+          "'self'",
+          "'unsafe-inline'",
+          'https://checkout.razorpay.com',
+        ],
+        frameSrc: ["'self'", 'https://api.razorpay.com'],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+        imgSrc: ["'self'", 'data:', 'blob:', 'https:', 'http:'],
+        connectSrc: [
+          "'self'",
+          'https://api.razorpay.com',
+          'https://lumberjack.razorpay.com',
+          process.env.CLIENT_URL || '',
+        ].filter(Boolean),
+      },
+    },
+    crossOriginEmbedderPolicy: false,
   })
 );
+
+// Strict Origin Validation for Cross-Origin Resource Sharing (CORS)
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
+].filter(Boolean);
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow localhost on any port (5173, 5174, etc.) or no origin (mobile/curl/same-origin)
-      if (
-        !origin ||
-        origin.startsWith('http://localhost') ||
-        origin.startsWith('http://127.0.0.1')
-      ) {
-        callback(null, true);
-      } else {
-        callback(null, true); // Permissive in full-stack self-hosted environments
+      // Allow requests with no origin (mobile apps, curl, server-to-server)
+      if (!origin) return callback(null, true);
+
+      // In non-production environments, allow local development ports
+      if (process.env.NODE_ENV !== 'production') {
+        if (
+          origin.startsWith('http://localhost') ||
+          origin.startsWith('http://127.0.0.1') ||
+          allowedOrigins.includes(origin)
+        ) {
+          return callback(null, true);
+        }
       }
+
+      // In production, strictly match configured allowed origins
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`Blocked by CORS: Origin ${origin} is not authorized`));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -46,7 +88,7 @@ app.use(
   })
 );
 
-// Logging: compact dev format in development, standard request log in production for Render monitoring
+// Logging: compact dev format in development, standard request log in production for monitoring
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 } else {
@@ -57,6 +99,13 @@ if (process.env.NODE_ENV === 'development') {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
+
+// NoSQL Injection Sanitizer (strips malicious $ and . operators)
+app.use(sanitizeInputs);
+
+// API Rate Limiter (protects against DoS / scraping)
+app.use('/api', apiLimiter);
+app.use('/api/v1', apiLimiter);
 
 // Base Health Check Routes
 app.get(['/', '/health', '/api/v1/health'], (req, res) => {

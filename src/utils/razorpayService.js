@@ -56,16 +56,20 @@ export const createRazorpayOrder = async ({ amount, currency = 'INR', receipt, n
 
 export const verifyRazorpayPayment = async ({ orderId, paymentId, signature }) => {
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
+  const isProduction = process.env.NODE_ENV === 'production';
 
-  // 1. Sandbox simulation orders auto-verify if paymentId provided
-  if (
-    (orderId && orderId.startsWith('order_rzp_mock_')) ||
-    signature === 'mock_signature_sandbox' ||
-    !keySecret ||
-    keySecret.includes('sandbox') ||
-    keySecret.includes('placeholder')
-  ) {
-    return true;
+  // 1. Sandbox simulation orders auto-verify in non-production environments ONLY
+  if (!isProduction) {
+    if (
+      (orderId && orderId.startsWith('order_rzp_mock_')) ||
+      signature === 'mock_signature_sandbox' ||
+      !keySecret ||
+      keySecret.includes('sandbox') ||
+      keySecret.includes('placeholder')
+    ) {
+      console.log('[Razorpay Sandbox]: Simulating successful payment in non-production environment');
+      return true;
+    }
   }
 
   // 2. Direct Razorpay API verification (The ultimate truth!)
@@ -87,15 +91,21 @@ export const verifyRazorpayPayment = async ({ orderId, paymentId, signature }) =
     }
   }
 
-  // 3. HMAC Signature verification
+  // 3. HMAC Signature verification with timing-safe comparison (prevents timing attacks)
   if (orderId && paymentId && signature && keySecret) {
     const generatedSignature = crypto
       .createHmac('sha256', keySecret)
       .update(`${orderId}|${paymentId}`)
       .digest('hex');
 
-    if (generatedSignature === signature) {
-      return true;
+    try {
+      const genBuffer = Buffer.from(generatedSignature);
+      const sigBuffer = Buffer.from(signature);
+      if (genBuffer.length === sigBuffer.length && crypto.timingSafeEqual(genBuffer, sigBuffer)) {
+        return true;
+      }
+    } catch (e) {
+      return false;
     }
   }
 

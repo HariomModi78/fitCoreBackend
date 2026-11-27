@@ -7,6 +7,13 @@ import { initNightlyScheduler } from './services/nightlyScheduler.js';
 
 const PORT = process.env.PORT || 5000;
 
+// Security audit check on startup
+if (process.env.NODE_ENV === 'production') {
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'fitcore_super_secret_jwt_access_key_2025') {
+    console.warn('\x1b[33m%s\x1b[0m', '[SECURITY WARNING]: Default JWT_SECRET detected in production! Please set a unique, cryptographically random JWT_SECRET in your environment variables.');
+  }
+}
+
 const startServer = async () => {
   try {
     // Connect to database

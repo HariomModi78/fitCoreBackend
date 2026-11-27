@@ -4,6 +4,7 @@ import User from '../models/User.js';
 import {
   register,
   login,
+  logout,
   getCurrentUser,
   sendWhatsAppOtpHandler,
   verifyWhatsAppOtpHandler,
@@ -11,6 +12,7 @@ import {
   resetPassword,
 } from '../controllers/auth.controller.js';
 import { verifyJWT } from '../middlewares/auth.js';
+import { authLimiter } from '../middlewares/rateLimiter.js';
 
 const router = Router();
 
@@ -37,16 +39,17 @@ const optionalJWT = async (req, res, next) => {
   next();
 };
 
-router.post('/register', register);
-router.post('/login', login);
+router.post('/register', authLimiter, register);
+router.post('/login', authLimiter, login);
+router.post('/logout', logout);
 router.get('/me', verifyJWT, getCurrentUser);
 
 // WhatsApp OTP routes
-router.post('/send-whatsapp-otp', optionalJWT, sendWhatsAppOtpHandler);
-router.post('/verify-whatsapp-otp', optionalJWT, verifyWhatsAppOtpHandler);
+router.post('/send-whatsapp-otp', authLimiter, optionalJWT, sendWhatsAppOtpHandler);
+router.post('/verify-whatsapp-otp', authLimiter, optionalJWT, verifyWhatsAppOtpHandler);
 
-// Password Reset via WhatsApp OTP
-router.post('/forgot-password', forgotPassword);
-router.post('/reset-password', resetPassword);
+// Password Reset routes
+router.post('/forgot-password', authLimiter, forgotPassword);
+router.post('/reset-password', authLimiter, resetPassword);
 
 export default router;
