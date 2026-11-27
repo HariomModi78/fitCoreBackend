@@ -18,8 +18,9 @@ const clientDistPath = path.resolve(__dirname, '../../client/dist');
 
 const app = express();
 
-// Trust reverse proxy (Render, Railway, Nginx, Cloudflare) for secure cookies & client IP
-app.enable('trust proxy');
+// Trust reverse proxy: On Render/Railway/Heroku, trust 1 hop (the reverse proxy)
+// This secures IP extraction and fixes express-rate-limit ERR_ERL_PERMISSIVE_TRUST_PROXY
+app.set('trust proxy', 1);
 
 // Security Middlewares: Content Security Policy & Security Headers
 app.use(
