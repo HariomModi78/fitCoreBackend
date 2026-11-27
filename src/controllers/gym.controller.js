@@ -70,8 +70,18 @@ export const completeOnboarding = asyncHandler(async (req, res) => {
 
   if (gymDetails) {
     if (gymDetails.name) gym.name = gymDetails.name.trim();
-    if (gymDetails.phone) gym.phone = gymDetails.phone.trim();
-    if (gymDetails.email) gym.email = gymDetails.email.toLowerCase().trim();
+    if (gymDetails.phone && gymDetails.phone !== '0000000000') {
+      gym.phone = gymDetails.phone.trim();
+    } else if ((!gym.phone || gym.phone === '0000000000') && req.user?.phone) {
+      gym.phone = req.user.phone;
+    }
+
+    if (gymDetails.email) {
+      gym.email = gymDetails.email.toLowerCase().trim();
+    } else if (!gym.email && req.user?.email) {
+      gym.email = req.user.email.toLowerCase().trim();
+    }
+
     if (gymDetails.currency) gym.currency = gymDetails.currency;
     if (gymDetails.timezone) gym.timezone = gymDetails.timezone;
     if (gymDetails.address) gym.address = gymDetails.address;
