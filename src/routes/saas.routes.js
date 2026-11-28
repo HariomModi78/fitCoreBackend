@@ -8,14 +8,14 @@ import {
   verifyAndActivateSubscription,
   getGymSaaSStatus,
 } from '../controllers/saas.controller.js';
-import { verifyJWT, verifySuperAdmin } from '../middlewares/auth.js';
+import { verifyJWT, verifySuperAdmin, optionalAuth } from '../middlewares/auth.js';
 import { requireTenant } from '../middlewares/tenant.js';
 import { requireRole } from '../middlewares/rbac.js';
 
 const router = Router();
 
-// 1. Plan Catalog (Accessible to all authenticated users)
-router.get('/plans', verifyJWT, getSaaSPlans);
+// 1. Plan Catalog (Accessible publicly and to all authenticated users)
+router.get('/plans', optionalAuth, getSaaSPlans);
 
 // 2. Superadmin Management Endpoints (Only Superadmin can add/edit plans)
 router.post('/plans', verifyJWT, verifySuperAdmin, createSaaSPlan);

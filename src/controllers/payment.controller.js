@@ -284,6 +284,11 @@ export const recordPayment = asyncHandler(async (req, res) => {
     },
   });
 
+  await payment.populate([
+    { path: 'memberId', select: 'name memberCode phone email avatar' },
+    { path: 'subscriptionId', select: 'planNameSnapshot startDate endDate payableAmount amountPaid dueAmount' },
+  ]);
+
   return ApiResponse.created(res, payment, 'Payment recorded successfully');
 });
 

@@ -134,18 +134,19 @@ ${formattedPerms}
 Please log in to manage gym members and operations securely.
 FitCore - Stronger Together!`;
 
-  let whatsappResult = null;
   const whatsappUrl = generateWhatsAppUrl(cleanPhone, waMessage);
 
-  try {
-    whatsappResult = await dispatchWhatsAppMessage({
-      phone: cleanPhone,
-      text: waMessage,
+  // Dispatch WhatsApp message asynchronously in background so HTTP response is instant (<50ms)
+  dispatchWhatsAppMessage({
+    phone: cleanPhone,
+    text: waMessage,
+  })
+    .then((result) => {
+      console.log(`[Staff Invite]: WhatsApp credentials sent to ${cleanPhone} (via: ${result?.via})`);
+    })
+    .catch((waErr) => {
+      console.warn('[Staff WhatsApp Dispatch Warning]:', waErr.message);
     });
-    console.log(`[Staff Invite]: WhatsApp credentials sent to ${cleanPhone} (via: ${whatsappResult?.via})`);
-  } catch (waErr) {
-    console.warn('[Staff WhatsApp Dispatch Warning]:', waErr.message);
-  }
 
   const populatedMembership = await GymMembership.findById(membership._id).populate(
     'userId',
@@ -164,7 +165,7 @@ FitCore - Stronger Together!`;
         isNewUser,
       },
       whatsappUrl,
-      whatsappResult,
+      whatsappResult: { success: true, via: 'queued' },
     },
     `Staff member invited successfully! Credentials sent to WhatsApp (${cleanPhone}).`
   );

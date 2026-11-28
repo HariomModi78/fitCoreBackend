@@ -46,4 +46,29 @@ export const verifySuperAdmin = asyncHandler(async (req, res, next) => {
   next();
 });
 
+export const optionalAuth = asyncHandler(async (req, res, next) => {
+  const token =
+    req.cookies?.accessToken ||
+    req.header('Authorization')?.replace('Bearer ', '');
+
+  if (!token) {
+    return next();
+  }
+
+  try {
+    const decodedToken = jwt.verify(
+      token,
+      process.env.JWT_SECRET || 'fitcore_super_secret_jwt_access_key_2025'
+    );
+
+    const user = await User.findById(decodedToken.id).select('-password');
+    if (user && (user.status === 'active' || user.isSuperAdmin)) {
+      req.user = user;
+    }
+  } catch (error) {
+    // Silently continue without authenticated user for optional auth
+  }
+  next();
+});
+
 export default verifyJWT;
